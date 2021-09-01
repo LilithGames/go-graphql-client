@@ -432,7 +432,7 @@ func (sc *SubscriptionClient) Run() error {
 					continue
 				}
 
-				go sub.handler(out.Data, nil)
+				go sub.handler(&message.Payload, nil)
 			case GQL_CONNECTION_ERROR:
 				sc.printLog(message, GQL_CONNECTION_ERROR)
 			case GQL_COMPLETE:
