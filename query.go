@@ -135,7 +135,7 @@ func writeQuery(w io.Writer, t reflect.Type, inline bool) {
 				if ok {
 					io.WriteString(w, value)
 				} else {
-					io.WriteString(w, ident.ParseMixedCaps(f.Name).ToMixedCaps())
+					io.WriteString(w, ident.ParseMixedCaps(f.Name).ToRaw())
 				}
 			}
 			writeQuery(w, f.Type, inlineField)

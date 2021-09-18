@@ -156,6 +156,10 @@ func (n Name) ToLowerCamelCase() string {
 	return strings.Join(n, "")
 }
 
+func (n Name) ToRaw() string {
+	return strings.Join(n, "")
+}
+
 // isInitialism reports whether word is an initialism.
 func isInitialism(word string) (string, bool) {
 	initialism := strings.ToUpper(word)
