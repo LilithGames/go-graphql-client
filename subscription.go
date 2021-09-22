@@ -405,7 +405,21 @@ func (sc *SubscriptionClient) Run() error {
 			switch message.Type {
 			case GQL_ERROR:
 				sc.printLog(message, GQL_ERROR)
-				fallthrough
+				id, err := uuid.Parse(message.ID)
+				if err != nil {
+					continue
+				}
+				sub, ok := sc.subscriptions[id.String()]
+				if !ok {
+					continue
+				}
+				var errs errors
+				err = json.Unmarshal(message.Payload, &errs)
+				if err == nil {
+					go sub.handler(nil, errs)
+				} else {
+					go sub.handler(nil, err)
+				}
 			case GQL_DATA:
 				sc.printLog(message, GQL_DATA)
 				id, err := uuid.Parse(message.ID)
@@ -418,7 +432,6 @@ func (sc *SubscriptionClient) Run() error {
 				}
 				var out struct {
 					Data   *json.RawMessage
-					Errors errors
 					//Extensions interface{} // Unused.
 				}
 
@@ -427,11 +440,6 @@ func (sc *SubscriptionClient) Run() error {
 					go sub.handler(nil, err)
 					continue
 				}
-				if len(out.Errors) > 0 {
-					go sub.handler(nil, out.Errors)
-					continue
-				}
-
 				go sub.handler(&message.Payload, nil)
 			case GQL_CONNECTION_ERROR:
 				sc.printLog(message, GQL_CONNECTION_ERROR)

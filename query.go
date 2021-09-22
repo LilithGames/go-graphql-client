@@ -6,8 +6,6 @@ import (
 	"io"
 	"reflect"
 	"sort"
-
-	"github.com/hasura/go-graphql-client/ident"
 )
 
 func constructQuery(v interface{}, variables map[string]interface{}, name string) string {
@@ -135,7 +133,7 @@ func writeQuery(w io.Writer, t reflect.Type, inline bool) {
 				if ok {
 					io.WriteString(w, value)
 				} else {
-					io.WriteString(w, ident.ParseMixedCaps(f.Name).ToRaw())
+					io.WriteString(w, f.Name)
 				}
 			}
 			writeQuery(w, f.Type, inlineField)
