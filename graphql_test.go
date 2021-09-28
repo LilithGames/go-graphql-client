@@ -2,6 +2,7 @@ package graphql_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"io/ioutil"
 	"net/http"
@@ -59,7 +60,7 @@ func TestClient_Query_partialDataWithErrorResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("got error: nil, want: non-nil")
 	}
-	if got, want := err.Error(), "Could not resolve to a node with the global id of 'NotExist'"; got != want {
+	if got, want := err.Error(), "Message: Could not resolve to a node with the global id of 'NotExist', Locations: [{Line:10 Column:4}]"; got != want {
 		t.Errorf("got error: %v, want: %v", got, want)
 	}
 
@@ -68,6 +69,55 @@ func TestClient_Query_partialDataWithErrorResponse(t *testing.T) {
 	}
 	if q.Node2 != nil {
 		t.Errorf("got non-nil q.Node2: %v, want: nil", *q.Node2)
+	}
+}
+
+func TestClient_Query_partialDataRawQueryWithErrorResponse(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/graphql", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		mustWrite(w, `{
+			"data": {
+				"node1": { "id": "MDEyOklzc3VlQ29tbWVudDE2OTQwNzk0Ng==" },
+				"node2": null
+			},
+			"errors": [
+				{
+					"message": "Could not resolve to a node with the global id of 'NotExist'",
+					"type": "NOT_FOUND",
+					"path": [
+						"node2"
+					],
+					"locations": [
+						{
+							"line": 10,
+							"column": 4
+						}
+					]
+				}
+			]
+		}`)
+	})
+	client := graphql.NewClient("/graphql", &http.Client{Transport: localRoundTripper{handler: mux}})
+
+	var q struct {
+		Node1 json.RawMessage `graphql:"node1"`
+		Node2 *struct {
+			ID graphql.ID
+		} `graphql:"node2: node(id: \"NotExist\")"`
+	}
+	err := client.Query(context.Background(), &q, nil)
+	if err == nil {
+		t.Fatal("got error: nil, want: non-nil\n")
+	}
+	if got, want := err.Error(), "Message: Could not resolve to a node with the global id of 'NotExist', Locations: [{Line:10 Column:4}]"; got != want {
+		t.Errorf("got error: %v, want: %v\n", got, want)
+	}
+	if q.Node1 == nil || string(q.Node1) != `{"id":"MDEyOklzc3VlQ29tbWVudDE2OTQwNzk0Ng=="}` {
+		t.Errorf("got wrong q.Node1: %v\n", string(q.Node1))
+	}
+	if q.Node2 != nil {
+		t.Errorf("got non-nil q.Node2: %v, want: nil\n", *q.Node2)
 	}
 }
 
@@ -100,7 +150,7 @@ func TestClient_Query_noDataWithErrorResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("got error: nil, want: non-nil")
 	}
-	if got, want := err.Error(), "Field 'user' is missing required arguments: login"; got != want {
+	if got, want := err.Error(), "Message: Field 'user' is missing required arguments: login, Locations: [{Line:7 Column:3}]"; got != want {
 		t.Errorf("got error: %v, want: %v", got, want)
 	}
 	if q.User.Name != "" {

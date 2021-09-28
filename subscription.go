@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,7 +61,7 @@ func (om OperationMessage) String() string {
 	return string(bs)
 }
 
-// WebsocketHandler abstracts WebSocket connecton functions
+// WebsocketHandler abstracts WebSocket connection functions
 // ReadJSON and WriteJSON data of a frame from the WebSocket connection.
 // Close the WebSocket connection.
 type WebsocketConn interface {
@@ -91,7 +92,7 @@ type SubscriptionClient struct {
 	cancel           context.CancelFunc
 	subscribersMu    sync.Mutex
 	timeout          time.Duration
-	isRunning        Boolean
+	isRunning        int64
 	readLimit        int64 // max size of response message. Default 10 MB
 	log              func(args ...interface{})
 	createConn       func(sc *SubscriptionClient) (WebsocketConn, error)
@@ -182,22 +183,24 @@ func (sc *SubscriptionClient) OnError(onError func(sc *SubscriptionClient, err e
 	return sc
 }
 
-// OnConnected event is triggered when the websocket connected to GraphQL server sucessfully
+// OnConnected event is triggered when the websocket connected to GraphQL server successfully
 func (sc *SubscriptionClient) OnConnected(fn func()) *SubscriptionClient {
 	sc.onConnected = fn
 	return sc
 }
 
-// OnDisconnected event is triggered when the websocket server was stil down after retry timeout
+// OnDisconnected event is triggered when the websocket server was still down after retry timeout
 func (sc *SubscriptionClient) OnDisconnected(fn func()) *SubscriptionClient {
 	sc.onDisconnected = fn
 	return sc
 }
 
 func (sc *SubscriptionClient) setIsRunning(value Boolean) {
-	sc.subscribersMu.Lock()
-	sc.isRunning = value
-	sc.subscribersMu.Unlock()
+	if value {
+		atomic.StoreInt64(&sc.isRunning, 1)
+	} else {
+		atomic.StoreInt64(&sc.isRunning, 0)
+	}
 }
 
 func (sc *SubscriptionClient) init() error {
@@ -212,7 +215,7 @@ func (sc *SubscriptionClient) init() error {
 		var conn WebsocketConn
 		// allow custom websocket client
 		if sc.conn == nil {
-			conn, err = newWebsocketConn(sc)
+			conn, err = sc.createConn(sc)
 			if err == nil {
 				sc.conn = conn
 			}
@@ -284,9 +287,18 @@ func (sc *SubscriptionClient) NamedSubscribe(name string, v interface{}, variabl
 	return sc.do(v, variables, handler, name)
 }
 
+// SubscribeRaw sends start message to server and open a channel to receive data, with raw query
+func (sc *SubscriptionClient) SubscribeRaw(query string, variables map[string]interface{}, handler func(message *json.RawMessage, err error) error) (string, error) {
+	return sc.doRaw(query, variables, handler)
+}
+
 func (sc *SubscriptionClient) do(v interface{}, variables map[string]interface{}, handler func(message *json.RawMessage, err error) error, name string) (string, error) {
-	id := uuid.New().String()
 	query := constructSubscription(v, variables, name)
+	return sc.doRaw(query, variables, handler)
+}
+
+func (sc *SubscriptionClient) doRaw(query string, variables map[string]interface{}, handler func(message *json.RawMessage, err error) error) (string, error) {
+	id := uuid.New().String()
 
 	sub := subscription{
 		query:     query,
@@ -295,7 +307,7 @@ func (sc *SubscriptionClient) do(v interface{}, variables map[string]interface{}
 	}
 
 	// if the websocket client is running, start subscription immediately
-	if sc.isRunning {
+	if atomic.LoadInt64(&sc.isRunning) > 0 {
 		if err := sc.startSubscription(id, &sub); err != nil {
 			return "", err
 		}
@@ -358,15 +370,18 @@ func (sc *SubscriptionClient) Run() error {
 	}
 
 	// lazily start subscriptions
+	sc.subscribersMu.Lock()
 	for k, v := range sc.subscriptions {
 		if err := sc.startSubscription(k, v); err != nil {
 			sc.Unsubscribe(k)
 			return err
 		}
 	}
+	sc.subscribersMu.Unlock()
+
 	sc.setIsRunning(true)
 
-	for sc.isRunning {
+	for atomic.LoadInt64(&sc.isRunning) > 0 {
 		select {
 		case <-sc.context.Done():
 			return nil
@@ -426,7 +441,11 @@ func (sc *SubscriptionClient) Run() error {
 				if err != nil {
 					continue
 				}
+
+				sc.subscribersMu.Lock()
 				sub, ok := sc.subscriptions[id.String()]
+				sc.subscribersMu.Unlock()
+
 				if !ok {
 					continue
 				}
@@ -460,7 +479,7 @@ func (sc *SubscriptionClient) Run() error {
 	}
 
 	// if the running status is false, stop retrying
-	if !sc.isRunning {
+	if atomic.LoadInt64(&sc.isRunning) == 0 {
 		return nil
 	}
 
@@ -470,17 +489,16 @@ func (sc *SubscriptionClient) Run() error {
 // Unsubscribe sends stop message to server and close subscription channel
 // The input parameter is subscription ID that is returned from Subscribe function
 func (sc *SubscriptionClient) Unsubscribe(id string) error {
+	sc.subscribersMu.Lock()
+	defer sc.subscribersMu.Unlock()
+
 	_, ok := sc.subscriptions[id]
 	if !ok {
 		return fmt.Errorf("subscription id %s doesn't not exist", id)
 	}
 
-	err := sc.stopSubscription(id)
-
-	sc.subscribersMu.Lock()
 	delete(sc.subscriptions, id)
-	sc.subscribersMu.Unlock()
-	return err
+	return sc.stopSubscription(id)
 }
 
 func (sc *SubscriptionClient) stopSubscription(id string) error {
@@ -517,14 +535,16 @@ func (sc *SubscriptionClient) terminate() error {
 
 // Reset restart websocket connection and subscriptions
 func (sc *SubscriptionClient) Reset() error {
-	if !sc.isRunning {
+	if atomic.LoadInt64(&sc.isRunning) == 0 {
 		return nil
 	}
 
+	sc.subscribersMu.Lock()
 	for id, sub := range sc.subscriptions {
 		_ = sc.stopSubscription(id)
 		sub.started = false
 	}
+	sc.subscribersMu.Unlock()
 
 	if sc.conn != nil {
 		_ = sc.terminate()
@@ -539,12 +559,16 @@ func (sc *SubscriptionClient) Reset() error {
 // Close closes all subscription channel and websocket as well
 func (sc *SubscriptionClient) Close() (err error) {
 	sc.setIsRunning(false)
+
+	sc.subscribersMu.Lock()
 	for id := range sc.subscriptions {
 		if err = sc.Unsubscribe(id); err != nil {
 			sc.cancel()
 			return err
 		}
 	}
+	sc.subscribersMu.Unlock()
+
 	if sc.conn != nil {
 		_ = sc.terminate()
 		err = sc.conn.Close()
@@ -556,26 +580,26 @@ func (sc *SubscriptionClient) Close() (err error) {
 }
 
 // default websocket handler implementation using https://github.com/nhooyr/websocket
-type websocketHandler struct {
+type WebsocketHandler struct {
 	ctx     context.Context
 	timeout time.Duration
 	*websocket.Conn
 }
 
-func (wh *websocketHandler) WriteJSON(v interface{}) error {
+func (wh *WebsocketHandler) WriteJSON(v interface{}) error {
 	ctx, cancel := context.WithTimeout(wh.ctx, wh.timeout)
 	defer cancel()
 
 	return wsjson.Write(ctx, wh.Conn, v)
 }
 
-func (wh *websocketHandler) ReadJSON(v interface{}) error {
+func (wh *WebsocketHandler) ReadJSON(v interface{}) error {
 	ctx, cancel := context.WithTimeout(wh.ctx, wh.timeout)
 	defer cancel()
 	return wsjson.Read(ctx, wh.Conn, v)
 }
 
-func (wh *websocketHandler) Close() error {
+func (wh *WebsocketHandler) Close() error {
 	return wh.Conn.Close(websocket.StatusNormalClosure, "close websocket")
 }
 
@@ -589,7 +613,7 @@ func newWebsocketConn(sc *SubscriptionClient) (WebsocketConn, error) {
 		return nil, err
 	}
 
-	return &websocketHandler{
+	return &WebsocketHandler{
 		ctx:     sc.GetContext(),
 		Conn:    c,
 		timeout: sc.GetTimeout(),
