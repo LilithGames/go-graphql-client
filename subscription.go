@@ -373,6 +373,7 @@ func (sc *SubscriptionClient) Run() error {
 	sc.subscribersMu.Lock()
 	for k, v := range sc.subscriptions {
 		if err := sc.startSubscription(k, v); err != nil {
+			sc.subscribersMu.Unlock()
 			sc.Unsubscribe(k)
 			return err
 		}
@@ -561,15 +562,12 @@ func (sc *SubscriptionClient) Reset() error {
 // Close closes all subscription channel and websocket as well
 func (sc *SubscriptionClient) Close() (err error) {
 	sc.setIsRunning(false)
-
-	sc.subscribersMu.Lock()
 	for id := range sc.subscriptions {
 		if err = sc.Unsubscribe(id); err != nil {
 			sc.cancel()
 			return err
 		}
 	}
-	sc.subscribersMu.Unlock()
 
 	if sc.conn != nil {
 		_ = sc.terminate()
@@ -577,7 +575,6 @@ func (sc *SubscriptionClient) Close() (err error) {
 		sc.conn = nil
 	}
 	sc.cancel()
-
 	return
 }
 
