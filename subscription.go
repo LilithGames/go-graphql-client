@@ -424,7 +424,9 @@ func (sc *SubscriptionClient) Run() error {
 				if err != nil {
 					continue
 				}
+				sc.subscribersMu.Lock()
 				sub, ok := sc.subscriptions[id.String()]
+				sc.subscribersMu.Unlock()
 				if !ok {
 					continue
 				}
