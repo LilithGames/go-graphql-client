@@ -452,7 +452,7 @@ func (sc *SubscriptionClient) Run() error {
 					continue
 				}
 				var out struct {
-					Data   *json.RawMessage
+					Data *json.RawMessage
 					//Extensions interface{} // Unused.
 				}
 
